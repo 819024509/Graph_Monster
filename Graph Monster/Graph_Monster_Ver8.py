@@ -301,6 +301,7 @@ class GraphMonster:
         self.handleStateChange(self.STATE_NODE)
         self.toggleTheme()
         self.updateOutPut()
+        self.pushCurData()
         self.mainWin.mainloop()
 
     def pushCurData(self, event=None):
@@ -309,17 +310,21 @@ class GraphMonster:
             self.historyIdx += 1
             if len(self.graphHistory) == self.historyIdx:
                 self.graphHistory.append(None)
-            self.graphHistory[self.historyIdx] = data
+            self.graphHistory[self.historyIdx] = (data, self.curScale)
 
     def popCurData(self, event):
         if self.historyIdx:
             self.historyIdx -= 1
-            self.deployData(self.graphHistory[self.historyIdx])
+            data, scale = self.graphHistory[self.historyIdx]
+            self.deployData(data)
+            self.curScale = scale
 
     def redoCurData(self, event):
         if len(self.graphHistory) - 1 > self.historyIdx:
             self.historyIdx += 1
-            self.deployData(self.graphHistory[self.historyIdx])
+            data, scale = self.graphHistory[self.historyIdx]
+            self.deployData(data)
+            self.curScale = scale
 
     def toggleTheme(self):
         themeIdx = self.curTheme.get()
@@ -337,9 +342,9 @@ class GraphMonster:
             thisType = self.canvas.type(idx)
             if thisType == "oval":
                 compressedData["Node"][tuple(self.canvas.coords(idx))] = \
-                    self.data["Node"][idx]
+                    deepcopy(self.data["Node"][idx])
             elif thisType == "line":
-                compressedData["Line"].append(self.data["Line"][idx])
+                compressedData["Line"].append(deepcopy(self.data["Line"][idx]))
         return compressedData
 
     def deployData(self, data):
@@ -348,6 +353,7 @@ class GraphMonster:
         self.data = {"Node": {}, "Line": {}}
         # Parse and load data
         self.incre_idx = data["curId"]
+        nodeValToObj = {}
         scale = 1
         for coord, node in data["Node"].items():
             scale = node.scale
@@ -360,8 +366,11 @@ class GraphMonster:
             node.canvasIds = [nodeId, textId]
             node.adjLines = set()
             self.data["Node"][nodeId] = node
+            nodeValToObj[node.val] = node
         self.curScale = scale
         for line in data["Line"]:
+            line.node1 = nodeValToObj[line.node1.val]
+            line.node2 = nodeValToObj[line.node2.val]
             lineCoord = self.getLineCoords(line.node1, line.node2)
             textCoord = self.linearComb(*lineCoord)
             lineId = self.drawLine(*lineCoord)
@@ -399,6 +408,7 @@ class GraphMonster:
             if obj:
                 with obj as file:
                     self.deployData(load(file))
+                    self.pushCurData()
         except:
             Messagebox.show_error(title="Error", message="Loading Failed")
 
@@ -690,6 +700,8 @@ class GraphMonster:
             self.canvas.itemconfig(textId, text=str(weight))
             self.settingStatus.set(f"Successfully set to {weight}")
             self.updateOutPut()
+            # weight set
+            self.pushCurData()
         except:
             self.settingStatus.set("Invalid Input")
 
@@ -736,6 +748,7 @@ class GraphMonster:
                                 )
                             ],
                         )
+                        self.pushCurData()
                     # if click on a node
                     elif curIds and curIds[0] in self.data["Node"]:
                         self.startNode = self.data["Node"][curIds[0]]
@@ -782,6 +795,8 @@ class GraphMonster:
                     self.NodeBtn["state"] = self.dragBtn["state"] = "normal"
                     self.canvas.config(cursor="")
                     self.canvas.delete("tmp")  # Get rid of assist line
+                    # Trace add
+                    self.pushCurData()
                 # If we choose the start of a line
                 else:
                     self.lineStartNode = lineEndNode
@@ -826,6 +841,9 @@ class GraphMonster:
                 # maintain canvas
                 self.canvas.delete(*line.canvasIds)
 
+            # Trace delete
+            self.pushCurData()
+
         self.updateOutPut()
 
     def handleMotion(self, event):
@@ -858,14 +876,18 @@ class GraphMonster:
             for lineId in self.startNode.adjLines:
                 self.reconnect(lineId)
 
-    def handleWheel(self, event):
-        if self.curState == self.STATE_DRAG:
+    def handleWheel(self, event, signal=0):
+        if self.curState == self.STATE_DRAG and not signal:
             event.x, event.y = self.getCanvasCoords(event)
             scale = 1 / self.SCALERATIO if event.num == 5 or event.delta == -120 else self.SCALERATIO
             self.curScale *= scale
             self.canvas.scale("all", event.x, event.y, scale, scale)
             for node in self.data["Node"].values():
                 node.scale *= scale
+        elif signal:
+            scale = 1 / self.SCALERATIO if event.num == 5 else self.SCALERATIO
+            self.curScale *= scale
+            self.canvas.scale("all", event.x, event.y, scale, scale)
 
     def handleMove(self, event):
         if self.curState == self.STATE_DRAG:
@@ -1090,9 +1112,8 @@ class GraphMonster:
         '''
         nodeU, nodeL, nodeS = style["Node"].values()
         lineU, lineL, lineS = style["Line"].values()
-        return ((not modeN or (all(nodeL) and nodeS)) and "label" in nodeU) and \
-                ((not modeL or (all(lineL) and lineS)) and \
-                    "node1" in lineU and "node2" in lineU and "weight" in lineU)
+        return (not modeN or (all(nodeL) and nodeS)) and \
+                (not modeL or (all(lineL) and lineS))
 
     def getCustomedOutput(self, modeN, modeL):
         '''
@@ -1148,9 +1169,6 @@ class GraphMonster:
                                                   self.customLineMode.get())
         self.nodeEntrys[2].insert("1.0", nodeStr)
         self.edgeEntrys[2].insert("1.0", lineStr)
-
-        # Trace add & delete
-        self.pushCurData()
 
     def linearComb(self, x1, y1, x2, y2, ratio=0.7):
         # offset = 0.1 * max(abs(x1 - x2), abs(y1 - y2))
